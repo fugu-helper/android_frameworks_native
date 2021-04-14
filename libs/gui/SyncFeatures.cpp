@@ -46,13 +46,13 @@ SyncFeatures::SyncFeatures() : Singleton<SyncFeatures>(),
         // This makes GLConsumer use the EGL_ANDROID_native_fence_sync
         // extension to create Android native fences to signal when all
         // GLES reads for a given buffer have completed.
-        mHasNativeFenceSync = true;
+        mHasNativeFenceSync = false;
     }
     if (strstr(exts, "EGL_KHR_fence_sync")) {
-        mHasFenceSync = true;
+        mHasFenceSync = false;
     }
     if (strstr(exts, "EGL_KHR_wait_sync")) {
-        mHasWaitSync = true;
+        mHasWaitSync = false;
     }
     mString.append("[using:");
     if (useNativeFenceSync()) {

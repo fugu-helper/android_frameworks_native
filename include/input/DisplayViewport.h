@@ -40,12 +40,19 @@ struct DisplayViewport {
     int32_t deviceWidth;
     int32_t deviceHeight;
     String8 uniqueId;
+#ifdef TRIPLE_DISP
+    int32_t deviceLayerstack;
+#endif
 
     DisplayViewport() :
             displayId(ADISPLAY_ID_NONE), orientation(DISPLAY_ORIENTATION_0),
             logicalLeft(0), logicalTop(0), logicalRight(0), logicalBottom(0),
             physicalLeft(0), physicalTop(0), physicalRight(0), physicalBottom(0),
+#ifndef TRIPLE_DISP
             deviceWidth(0), deviceHeight(0) {
+#else
+            deviceWidth(0), deviceHeight(0),deviceLayerstack(0) {
+#endif
     }
 
     bool operator==(const DisplayViewport& other) const {
@@ -61,7 +68,12 @@ struct DisplayViewport {
                 && physicalBottom == other.physicalBottom
                 && deviceWidth == other.deviceWidth
                 && deviceHeight == other.deviceHeight
+#ifndef TRIPLE_DISP
                 && uniqueId == other.uniqueId;
+#else
+                && uniqueId == other.uniqueId
+                && deviceLayerstack == other.deviceLayerstack;
+#endif
     }
 
     bool operator!=(const DisplayViewport& other) const {
@@ -85,6 +97,9 @@ struct DisplayViewport {
         physicalBottom = height;
         deviceWidth = width;
         deviceHeight = height;
+#ifdef TRIPLE_DISP
+        deviceLayerstack = 0;
+#endif
         uniqueId.clear();
     }
 };
@@ -96,7 +111,8 @@ struct DisplayViewport {
 enum class ViewportType : int32_t {
     VIEWPORT_INTERNAL = 1,
     VIEWPORT_EXTERNAL = 2,
-    VIEWPORT_VIRTUAL = 3,
+    VIEWPORT_SECOND_EXTERNAL = 3,
+    VIEWPORT_VIRTUAL = 4,
 };
 
 } // namespace android

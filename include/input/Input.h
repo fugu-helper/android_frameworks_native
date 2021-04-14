@@ -69,6 +69,12 @@ enum {
 
     /* The default display id. */
     ADISPLAY_ID_DEFAULT = 0,
+
+    /* Primary External Display Id */
+    ADISPLAY_ID_EXTERNAL = 1,
+
+    /* Secondary External Display ID */
+    ADISPLAY_ID_SECOND_EXTERNAL = 2,
 };
 
 enum {

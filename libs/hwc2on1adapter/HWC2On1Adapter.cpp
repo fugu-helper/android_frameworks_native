@@ -476,27 +476,46 @@ Error HWC2On1Adapter::registerCallback(Callback descriptor,
             auto connected = pending.second;
             pendingHotplugs.emplace_back(displayId, connected);
         }
+        if(pointer != nullptr){
+            mHwc1Device->registerProcs(mHwc1Device, \
+                static_cast<const hwc_procs_t*>(mHwc1Callbacks.get()));
+        }
     }
 
     // Call pending callbacks without the state lock held
     lock.unlock();
 
     if (hasPendingInvalidate) {
-        auto refresh = reinterpret_cast<HWC2_PFN_REFRESH>(pointer);
-        for (auto displayId : displayIds) {
-            refresh(callbackData, displayId);
+        if(pointer != nullptr) {
+            auto refresh = reinterpret_cast<HWC2_PFN_REFRESH>(pointer);
+            for (auto displayId : displayIds) {
+                refresh(callbackData, displayId);
+            }
+        }
+        else {
+            ALOGE("NULL refresh pointer in %s", __func__);
         }
     }
     if (!pendingVsyncs.empty()) {
-        auto vsync = reinterpret_cast<HWC2_PFN_VSYNC>(pointer);
-        for (auto& pendingVsync : pendingVsyncs) {
-            vsync(callbackData, pendingVsync.first, pendingVsync.second);
+        if(pointer != nullptr) {
+            auto vsync = reinterpret_cast<HWC2_PFN_VSYNC>(pointer);
+            for (auto& pendingVsync : pendingVsyncs) {
+                vsync(callbackData, pendingVsync.first, pendingVsync.second);
+            }
+        }
+        else {
+            ALOGE("NULL vsync pointer in %s", __func__);
         }
     }
     if (!pendingHotplugs.empty()) {
-        auto hotplug = reinterpret_cast<HWC2_PFN_HOTPLUG>(pointer);
-        for (auto& pendingHotplug : pendingHotplugs) {
-            hotplug(callbackData, pendingHotplug.first, pendingHotplug.second);
+        if(pointer != nullptr) {
+            auto hotplug = reinterpret_cast<HWC2_PFN_HOTPLUG>(pointer);
+            for (auto& pendingHotplug : pendingHotplugs) {
+                hotplug(callbackData, pendingHotplug.first, pendingHotplug.second);
+            }
+        }
+        else {
+            ALOGE("NULL hotplug pointer in %s", __func__);
         }
     }
     return Error::None;
@@ -796,10 +815,11 @@ Error HWC2On1Adapter::Display::present(int32_t* outRetireFence) {
         }
     }
 
-    *outRetireFence = mRetireFence.get()->dup();
-    ALOGV("[%" PRIu64 "] present returning retire fence %d", mId,
-            *outRetireFence);
-
+    if (!this->disconectted) {
+        *outRetireFence = mRetireFence.get()->dup();
+        ALOGV("[%" PRIu64 "] present returning retire fence %d", mId,
+                *outRetireFence);
+    }
     return Error::None;
 }
 
@@ -2489,6 +2509,10 @@ Error HWC2On1Adapter::setAllDisplays() {
             continue;
         }
 
+        if (mHwc1DisplayMap.count(hwc1Id) == 0) {
+            ALOGE("hwc1Vsync: Couldn't find display for HWC1 id %d", hwc1Id);
+	    continue;
+        }
         auto displayId = mHwc1DisplayMap[hwc1Id];
         auto& display = mDisplays[displayId];
         Error error = display->set(*mHwc1Contents[hwc1Id]);
@@ -2513,6 +2537,10 @@ Error HWC2On1Adapter::setAllDisplays() {
             continue;
         }
 
+        if (mHwc1DisplayMap.count(hwc1Id) == 0) {
+            ALOGE("hwc1Vsync: Couldn't find display for HWC1 id %d", hwc1Id);
+	    continue;
+        }
         auto displayId = mHwc1DisplayMap[hwc1Id];
         auto& display = mDisplays[displayId];
         auto retireFenceFd = mHwc1Contents[hwc1Id]->retireFenceFd;
@@ -2546,9 +2574,11 @@ void HWC2On1Adapter::hwc1Invalidate() {
     // Call back without the state lock held.
     lock.unlock();
 
-    auto refresh = reinterpret_cast<HWC2_PFN_REFRESH>(callbackInfo.pointer);
-    for (auto display : displays) {
-        refresh(callbackInfo.data, display);
+    if(callbackInfo.pointer != nullptr) {
+        auto refresh = reinterpret_cast<HWC2_PFN_REFRESH>(callbackInfo.pointer);
+        for (auto display : displays) {
+            refresh(callbackInfo.data, display);
+        }
     }
 }
 
@@ -2575,8 +2605,10 @@ void HWC2On1Adapter::hwc1Vsync(int hwc1DisplayId, int64_t timestamp) {
     // Call back without the state lock held.
     lock.unlock();
 
-    auto vsync = reinterpret_cast<HWC2_PFN_VSYNC>(callbackInfo.pointer);
-    vsync(callbackInfo.data, displayId, timestamp);
+    if(callbackInfo.pointer != nullptr) {
+        auto vsync = reinterpret_cast<HWC2_PFN_VSYNC>(callbackInfo.pointer);
+        vsync(callbackInfo.data, displayId, timestamp);
+    }
 }
 
 void HWC2On1Adapter::hwc1Hotplug(int hwc1DisplayId, int connected) {
@@ -2608,6 +2640,7 @@ void HWC2On1Adapter::hwc1Hotplug(int hwc1DisplayId, int connected) {
                 HWC2::DisplayType::Physical);
         display->setHwc1Id(HWC_DISPLAY_EXTERNAL);
         display->populateConfigs();
+        display->disconectted = false;
         displayId = display->getId();
         mHwc1DisplayMap[HWC_DISPLAY_EXTERNAL] = displayId;
         mDisplays.emplace(displayId, std::move(display));
@@ -2615,11 +2648,17 @@ void HWC2On1Adapter::hwc1Hotplug(int hwc1DisplayId, int connected) {
         if (connected != 0) {
             ALOGW("hwc1Hotplug: Received connect for previously connected "
                     "display");
+            displayId = mHwc1DisplayMap[hwc1DisplayId];
+            const auto& callbackInfo = mCallbacks[Callback::Hotplug];
+            auto hotplug = reinterpret_cast<HWC2_PFN_HOTPLUG>(callbackInfo.pointer);
+            hotplug(callbackInfo.data, displayId, static_cast<int32_t>(HWC2::Connection::Connected));
             return;
         }
 
         // Disconnect an existing display
         displayId = mHwc1DisplayMap[hwc1DisplayId];
+        auto& display = mDisplays[displayId];
+        display->disconectted = true;
         mHwc1DisplayMap.erase(HWC_DISPLAY_EXTERNAL);
         mDisplays.erase(displayId);
     }
@@ -2629,9 +2668,11 @@ void HWC2On1Adapter::hwc1Hotplug(int hwc1DisplayId, int connected) {
     // Call back without the state lock held
     lock.unlock();
 
-    auto hotplug = reinterpret_cast<HWC2_PFN_HOTPLUG>(callbackInfo.pointer);
-    auto hwc2Connected = (connected == 0) ?
+    if(callbackInfo.pointer != nullptr) {
+        auto hotplug = reinterpret_cast<HWC2_PFN_HOTPLUG>(callbackInfo.pointer);
+        auto hwc2Connected = (connected == 0) ?
             HWC2::Connection::Disconnected : HWC2::Connection::Connected;
-    hotplug(callbackInfo.data, displayId, static_cast<int32_t>(hwc2Connected));
+        hotplug(callbackInfo.data, displayId, static_cast<int32_t>(hwc2Connected));
+    }
 }
 } // namespace android

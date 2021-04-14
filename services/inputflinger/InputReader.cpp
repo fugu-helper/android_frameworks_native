@@ -51,6 +51,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <cutils/properties.h>
 
 #include <log/log.h>
 
@@ -80,6 +81,13 @@ static const nsecs_t TOUCH_DATA_TIMEOUT = ms2ns(20);
 // Artificial latency on synthetic events created from stylus data without corresponding touch
 // data.
 static const nsecs_t STYLUS_DATA_LATENCY = ms2ns(10);
+
+// make Touch work in Mosaic display mode
+static const int TOUCH_MOSAIC_MAX_DEVICES = 4;
+static const int TOUCH_DEV_PHY_MAX_CHARS = 80;
+static char mosaicDeviceIDs[TOUCH_MOSAIC_MAX_DEVICES][TOUCH_DEV_PHY_MAX_CHARS] = { 0 };
+static int32_t mosaicDeviceNum = 0;
+static bool mosaicConfigured = false;
 
 // --- Static Functions ---
 
@@ -1401,6 +1409,9 @@ uint32_t CursorButtonAccumulator::getButtonState() const {
     }
     if (mBtnRight) {
         result |= AMOTION_EVENT_BUTTON_SECONDARY;
+#ifdef TRIPLE_DISP
+        result |= AMOTION_EVENT_BUTTON_BACK;
+#endif
     }
     if (mBtnMiddle) {
         result |= AMOTION_EVENT_BUTTON_TERTIARY;
@@ -2849,6 +2860,9 @@ void CursorInputMapper::sync(nsecs_t when) {
         pointerCoords.setAxisValue(AMOTION_EVENT_AXIS_RELATIVE_X, deltaX);
         pointerCoords.setAxisValue(AMOTION_EVENT_AXIS_RELATIVE_Y, deltaY);
         displayId = ADISPLAY_ID_DEFAULT;
+#ifdef  TRIPLE_DISP
+        displayId = mPointerController->getFocusDisplayId();
+#endif
     } else {
         pointerCoords.setAxisValue(AMOTION_EVENT_AXIS_X, deltaX);
         pointerCoords.setAxisValue(AMOTION_EVENT_AXIS_Y, deltaY);
@@ -3084,6 +3098,8 @@ TouchInputMapper::TouchInputMapper(InputDevice* device) :
         mSource(0), mDeviceMode(DEVICE_MODE_DISABLED),
         mSurfaceWidth(-1), mSurfaceHeight(-1), mSurfaceLeft(0), mSurfaceTop(0),
         mSurfaceOrientation(DISPLAY_ORIENTATION_0) {
+    mXTranslate = 0.0;
+    mYTranslate = 0.0;
 }
 
 TouchInputMapper::~TouchInputMapper() {
@@ -3590,10 +3606,18 @@ void TouchInputMapper::configureSurface(nsecs_t when, bool* outResetNeeded) {
                 break;
             }
 
+            ALOGI("Mosaic natural LogicWidthHeight/PhysicalWidthHeight/PhysicalLeftTop/DeviceWidthHeight:"
+                              "%d %d, %d %d, %d %d, %d %d\n", naturalLogicalWidth, naturalLogicalHeight,
+                               naturalPhysicalWidth, naturalPhysicalHeight,
+                               naturalPhysicalLeft, naturalPhysicalTop, naturalDeviceWidth, naturalDeviceHeight);
+
             mSurfaceWidth = naturalLogicalWidth * naturalDeviceWidth / naturalPhysicalWidth;
             mSurfaceHeight = naturalLogicalHeight * naturalDeviceHeight / naturalPhysicalHeight;
             mSurfaceLeft = naturalPhysicalLeft * naturalLogicalWidth / naturalPhysicalWidth;
             mSurfaceTop = naturalPhysicalTop * naturalLogicalHeight / naturalPhysicalHeight;
+
+            ALOGI("Mosaic mSurface width/Height/Left/Top: %d,%d, %d, %d\n",
+                                            mSurfaceWidth, mSurfaceHeight, mSurfaceLeft, mSurfaceTop);
 
             mSurfaceOrientation = mParameters.orientationAware ?
                     mViewport.orientation : DISPLAY_ORIENTATION_0;
@@ -3603,6 +3627,8 @@ void TouchInputMapper::configureSurface(nsecs_t when, bool* outResetNeeded) {
             mSurfaceLeft = 0;
             mSurfaceTop = 0;
             mSurfaceOrientation = DISPLAY_ORIENTATION_0;
+            ALOGI("Mosaic rawWidth=%d rawHeight=%d, mSurface width/Height/Left/Top: %d,%d,%d,%d\n",
+                                    rawWidth, rawHeight, mSurfaceWidth, mSurfaceHeight, mSurfaceLeft, mSurfaceTop);
         }
     }
 
@@ -3622,6 +3648,36 @@ void TouchInputMapper::configureSurface(nsecs_t when, bool* outResetNeeded) {
         mPointerController.clear();
     }
 
+    if (initMosaicSetting()) {
+        int32_t width = 0;
+
+        if (mosaicDeviceNum == 2) {
+            width = mSurfaceWidth/2;
+            mSurfaceWidth = width;
+        } else if (mosaicDeviceNum == 3) {
+            width = mSurfaceWidth/3;
+            mSurfaceWidth = width;
+        }
+
+        if (!strcmp(mosaicDeviceIDs[0], getDeviceLocation().string())) {
+            mSurfaceLeft = 0;
+            ALOGI("Mosaic 1st device Id:%s, Width:%d, Height:%d, Left:%d, Top:%d\n",
+                  getDeviceLocation().string(), mSurfaceWidth, mSurfaceHeight, mSurfaceLeft, mSurfaceTop);
+        } else if (!strcmp(mosaicDeviceIDs[1], getDeviceLocation().string())) {
+            mSurfaceLeft = width;
+            ALOGI("Mosaic 2nd device Id:%s, Width:%d, Height:%d, Left:%d, Top:%d\n",
+                  getDeviceLocation().string(), mSurfaceWidth, mSurfaceHeight, mSurfaceLeft, mSurfaceTop);
+        } else if (!strcmp(mosaicDeviceIDs[2], getDeviceLocation().string())) {
+            mSurfaceLeft = width * 2;
+            ALOGI("Mosaic 3rd device Id:%s, Width:%d, Height:%d, Left:%d, Top:%d\n",
+                  getDeviceLocation().string(), mSurfaceWidth, mSurfaceHeight, mSurfaceLeft, mSurfaceTop);
+        }
+    }
+
+    ALOGI("Mosaic id=%d, name='%s', location='%s', Width=%d, Height=%d, left=%d, top=%d\n", getDeviceId(),
+                                    getDeviceName().string(), getDeviceLocation().string(), mSurfaceWidth,
+                                    mSurfaceHeight, mSurfaceLeft, mSurfaceTop);
+
     if (viewportChanged || deviceModeChanged) {
         ALOGI("Device reconfigured: id=%d, name='%s', size %dx%d, orientation %d, mode %d, "
                 "display id %d",
@@ -3631,8 +3687,8 @@ void TouchInputMapper::configureSurface(nsecs_t when, bool* outResetNeeded) {
         // Configure X and Y factors.
         mXScale = float(mSurfaceWidth) / rawWidth;
         mYScale = float(mSurfaceHeight) / rawHeight;
-        mXTranslate = -mSurfaceLeft;
-        mYTranslate = -mSurfaceTop;
+        mXTranslate += mSurfaceLeft;
+        mYTranslate += mSurfaceTop;
         mXPrecision = 1.0f / mXScale;
         mYPrecision = 1.0f / mYScale;
 
@@ -4283,7 +4339,71 @@ void TouchInputMapper::clearStylusDataPendingFlags() {
     mExternalStylusFusionTimeout = LLONG_MAX;
 }
 
+void TouchInputMapper::configMosaicSetting() {
+    char value[PROPERTY_VALUE_MAX];
+    int num;
+
+    property_get("persist.sys.touch.mosaic.mode", value, "0");
+    if (!atoi(value)) {
+        ALOGI("Mosaic mode is disabled\n");
+        mosaicConfigured = true;
+        return;
+    }
+
+    property_get("persist.sys.touch.mosaic.num", value, "2");
+    mosaicDeviceNum = atoi(value);
+
+    if (property_get(String8::format("persist.sys.touch.mosaic.%d", mosaicDeviceNum - 1), value, NULL) > 0) {
+        ALOGI("Mosaic mode map setting is configured\n");
+        mosaicConfigured = true;
+        return;
+    }
+
+    for (num = 0; num < mosaicDeviceNum && strcmp(mosaicDeviceIDs[num], getDeviceLocation().string()); num++) {
+        if (mosaicDeviceIDs[num][0] == '\0') {
+            strcpy(mosaicDeviceIDs[num], getDeviceLocation().string());
+            ALOGI("Touch Mosaic device map setting: [%d,%s]\n", num, getDeviceLocation().string());
+            break;
+        }
+    }
+
+    if (num + 1 >= mosaicDeviceNum) {
+        for (int i = 0; i < mosaicDeviceNum; i++) {
+            property_set(String8::format("persist.sys.touch.mosaic.%d", i), mosaicDeviceIDs[i]);
+            ALOGI("Configured Mosaic device map setting: [%d,%s]\n", i, mosaicDeviceIDs[i]);
+        }
+        mosaicConfigured = true;
+    }
+}
+
+int32_t TouchInputMapper::initMosaicSetting() {
+    char value[PROPERTY_VALUE_MAX];
+    int enable;
+
+    property_get("persist.sys.touch.mosaic.mode", value, "0");
+    enable = atoi(value);
+    if (!enable) {
+        ALOGI("Mosaic mode is disabled\n");
+        goto out;
+    }
+
+    property_get("persist.sys.touch.mosaic.num", value, "2");
+    mosaicDeviceNum = atoi(value);
+
+    for (int i = 0; i < mosaicDeviceNum; i++) {
+        property_get(String8::format("persist.sys.touch.mosaic.%d", i), value, NULL);
+        strcpy(mosaicDeviceIDs[i], value);
+
+        ALOGI("Initialize Mosaic device map setting: [%d,%s]\n", i, mosaicDeviceIDs[i]);
+    }
+out:
+    return enable;
+}
+
 void TouchInputMapper::process(const RawEvent* rawEvent) {
+    if (!mosaicConfigured)
+        configMosaicSetting();
+
     mCursorButtonAccumulator.process(rawEvent);
     mCursorScrollAccumulator.process(rawEvent);
     mTouchButtonAccumulator.process(rawEvent);

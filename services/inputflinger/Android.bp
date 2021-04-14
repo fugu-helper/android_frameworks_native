@@ -40,6 +40,7 @@ cc_library_shared {
         "-Wno-unused-parameter",
         // TODO: Move inputflinger to its own process and mark it hidden
         //-fvisibility=hidden
+	"-DTRIPLE_DISP"
     ],
 
     export_include_dirs: ["."],

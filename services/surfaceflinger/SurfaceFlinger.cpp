@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// #define LOG_NDEBUG 0
+//#define LOG_NDEBUG 0
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
 #include <stdint.h>
@@ -1305,7 +1305,8 @@ void SurfaceFlinger::onHotplugReceived(int32_t sequenceId,
             createBuiltinDisplayLocked(DisplayDevice::DISPLAY_PRIMARY);
         }
         createDefaultDisplayDevice();
-    } else {
+    } else if (display == DisplayDevice::DISPLAY_EXTERNAL) {
+        ALOGV("onHotPlugReceived for External Display Id");
         if (sequenceId != mComposerSequenceId) {
             return;
         }
@@ -1314,15 +1315,33 @@ void SurfaceFlinger::onHotplugReceived(int32_t sequenceId,
             return;
         }
         mHwc->onHotplug(display, connection);
-        auto type = DisplayDevice::DISPLAY_EXTERNAL;
+        auto type1 = DisplayDevice::DISPLAY_EXTERNAL;
         if (connection == HWC2::Connection::Connected) {
-            createBuiltinDisplayLocked(type);
+            createBuiltinDisplayLocked(type1);
         } else {
-            mCurrentState.displays.removeItem(mBuiltinDisplays[type]);
-            mBuiltinDisplays[type].clear();
+            mCurrentState.displays.removeItem(mBuiltinDisplays[type1]);
+            mBuiltinDisplays[type1].clear();
         }
         setTransactionFlags(eDisplayTransactionNeeded);
-
+        // Defer EventThread notification until SF has updated mDisplays.
+    } else if (display == DisplayDevice::DISPLAY_SECOND_EXTERNAL) {
+        ALOGV("onHotPlugReceived for Second External Display Id");
+        if (sequenceId != mComposerSequenceId) {
+            return;
+        }
+        if (mHwc->isUsingVrComposer()) {
+            ALOGE("External displays are not supported by the vr hardware composer.");
+            return;
+        }
+        mHwc->onHotplug(display, connection);
+        auto type2 = DisplayDevice::DISPLAY_SECOND_EXTERNAL;
+        if (connection == HWC2::Connection::Connected) {
+            createBuiltinDisplayLocked(type2);
+        } else {
+            mCurrentState.displays.removeItem(mBuiltinDisplays[type2]);
+            mBuiltinDisplays[type2].clear();
+        }
+        setTransactionFlags(eDisplayTransactionNeeded);
         // Defer EventThread notification until SF has updated mDisplays.
     }
 }

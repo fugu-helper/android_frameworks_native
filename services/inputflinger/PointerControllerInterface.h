@@ -58,6 +58,11 @@ public:
     /* Gets the absolute location of the pointer. */
     virtual void getPosition(float* outX, float* outY) const = 0;
 
+#ifdef TRIPLE_DISP
+    /*Get current focus display id*/
+    virtual int32_t getFocusDisplayId() = 0;
+#endif
+
     enum Transition {
         // Fade/unfade immediately.
         TRANSITION_IMMEDIATE,

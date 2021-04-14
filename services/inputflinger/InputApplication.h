@@ -31,6 +31,9 @@ namespace android {
 struct InputApplicationInfo {
     String8 name;
     nsecs_t dispatchingTimeout;
+#ifdef TRIPLE_DISP
+    int displayId;
+#endif
 };
 
 

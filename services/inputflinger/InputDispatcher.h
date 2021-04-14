@@ -267,6 +267,9 @@ public:
      */
     virtual bool checkInjectEventsPermissionNonReentrant(
             int32_t injectorPid, int32_t injectorUid) = 0;
+#ifdef TRIPLE_DISP
+    virtual void updateFocusDisplay(int displayId) = 0;
+#endif
 };
 
 
@@ -316,6 +319,21 @@ public:
      */
     virtual void setFocusedApplication(
             const sp<InputApplicationHandle>& inputApplicationHandle) = 0;
+#ifdef TRIPLE_DISP
+    /* Sets the external focused application.
+     *
+     * This method may be called on any thread (usually by the input manager).
+     */
+    virtual void setFocusedApplicationOnExternal(
+            const sp<InputApplicationHandle>& inputApplicationHandle) = 0;
+   /* Sets the external focused application.
+    *
+    * This method may be called on any thread (usually by the input manager).
+    */
+    virtual void setFocusedApplicationOnSecondExternal(
+            const sp<InputApplicationHandle>& inputApplicationHandle) = 0;
+
+#endif
 
     /* Sets the input dispatching mode.
      *
@@ -390,6 +408,12 @@ public:
 
     virtual void setInputWindows(const Vector<sp<InputWindowHandle> >& inputWindowHandles);
     virtual void setFocusedApplication(const sp<InputApplicationHandle>& inputApplicationHandle);
+#ifdef TRIPLE_DISP
+    virtual void setFocusedApplicationOnExternal(
+            const sp<InputApplicationHandle>& inputApplicationHandle);
+    virtual void setFocusedApplicationOnSecondExternal(
+            const sp<InputApplicationHandle>& inputApplicationHandle);
+#endif
     virtual void setInputDispatchMode(bool enabled, bool frozen);
     virtual void setInputFilterEnabled(bool enabled);
 
@@ -857,6 +881,9 @@ private:
     Condition mDispatcherIsAliveCondition;
 
     sp<Looper> mLooper;
+#ifdef TRIPLE_DISP
+    int32_t mFocusDisplayId;
+#endif
 
     EventEntry* mPendingEvent;
     Queue<EventEntry> mInboundQueue;
@@ -960,6 +987,10 @@ private:
 
     // Focus tracking for keys, trackball, etc.
     sp<InputWindowHandle> mFocusedWindowHandle;
+#ifdef TRIPLE_DISP
+    sp<InputWindowHandle> mFocusedWindowHandleOnExternal;
+    sp<InputWindowHandle> mFocusedWindowHandleOnSecondExternal;
+#endif
 
     // Focus tracking for touch.
     struct TouchedWindow {
@@ -992,6 +1023,15 @@ private:
 
     // Focused application.
     sp<InputApplicationHandle> mFocusedApplicationHandle;
+#ifdef TRIPLE_DISP
+    // Focused application display on external display
+    sp<InputApplicationHandle> mFocusedApplicationHandleOnExternal;
+
+     // Focused application display on Second external display
+    sp<InputApplicationHandle> mFocusedApplicationHandleOnSecondExternal;
+
+#endif
+
 
     // Dispatcher state at time of last ANR.
     String8 mLastANRState;

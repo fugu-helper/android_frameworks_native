@@ -207,7 +207,9 @@ InputDispatcher::InputDispatcher(const sp<InputDispatcherPolicyInterface>& polic
     mDispatchEnabled(false), mDispatchFrozen(false), mInputFilterEnabled(false),
     mInputTargetWaitCause(INPUT_TARGET_WAIT_CAUSE_NONE) {
     mLooper = new Looper(false);
-
+#ifdef TRIPLE_DISP
+    mFocusDisplayId = 0;
+#endif
     mKeyRepeatState.lastKeyEntry = NULL;
 
     policy->getDispatcherConfiguration(&mConfig);
@@ -767,20 +769,33 @@ bool InputDispatcher::dispatchKeyLocked(nsecs_t currentTime, KeyEntry* entry,
         if (entry->policyFlags & POLICY_FLAG_PASS_TO_USER) {
             CommandEntry* commandEntry = postCommandLocked(
                     & InputDispatcher::doInterceptKeyBeforeDispatchingLockedInterruptible);
+#ifndef TRIPLE_DISP
             if (mFocusedWindowHandle != NULL) {
+#else
+            if (mFocusedWindowHandle != NULL && mFocusDisplayId == ADISPLAY_ID_DEFAULT) {
+#endif
                 commandEntry->inputWindowHandle = mFocusedWindowHandle;
             }
+#ifdef TRIPLE_DISP
+            if (mFocusedWindowHandleOnExternal != NULL && mFocusDisplayId == ADISPLAY_ID_EXTERNAL) {
+                commandEntry->inputWindowHandle = mFocusedWindowHandleOnExternal;
+            }
+            else if ((mFocusedWindowHandleOnSecondExternal != NULL) &&
+                     (mFocusDisplayId == ADISPLAY_ID_SECOND_EXTERNAL)) {
+                commandEntry->inputWindowHandle = mFocusedWindowHandleOnSecondExternal;
+            }
+#endif
             commandEntry->keyEntry = entry;
             entry->refCount += 1;
             return false; // wait for the command to run
         } else {
             entry->interceptKeyResult = KeyEntry::INTERCEPT_KEY_RESULT_CONTINUE;
         }
-    } else if (entry->interceptKeyResult == KeyEntry::INTERCEPT_KEY_RESULT_SKIP) {
-        if (*dropReason == DROP_REASON_NOT_DROPPED) {
-            *dropReason = DROP_REASON_POLICY;
-        }
-    }
+     } else if (entry->interceptKeyResult == KeyEntry::INTERCEPT_KEY_RESULT_SKIP) {
+         if (*dropReason == DROP_REASON_NOT_DROPPED) {
+             *dropReason = DROP_REASON_POLICY;
+         }
+     }
 
     // Clean up if dropping the event.
     if (*dropReason != DROP_REASON_NOT_DROPPED) {
@@ -1037,7 +1052,6 @@ void InputDispatcher::resumeAfterTargetsNotReadyTimeoutLocked(nsecs_t newTimeout
                         }
                     }
                 }
-
                 if (connection->status == Connection::STATUS_NORMAL) {
                     CancelationOptions options(CancelationOptions::CANCEL_ALL_EVENTS,
                             "application not responding");
@@ -1071,12 +1085,39 @@ int32_t InputDispatcher::findFocusedWindowTargetsLocked(nsecs_t currentTime,
     int32_t injectionResult;
     String8 reason;
 
+#ifdef TRIPLE_DISP
+    sp<InputWindowHandle> focusWindowHandle = NULL;
+    sp<InputApplicationHandle> focusApplicationHandle = NULL;
+
+    if (mFocusDisplayId == ADISPLAY_ID_DEFAULT) {
+        focusWindowHandle = mFocusedWindowHandle;
+        focusApplicationHandle = mFocusedApplicationHandle;
+    } else if (mFocusDisplayId == ADISPLAY_ID_EXTERNAL) {
+        focusWindowHandle = mFocusedWindowHandleOnExternal;
+        focusApplicationHandle = mFocusedApplicationHandleOnExternal;
+    } else if (mFocusDisplayId == ADISPLAY_ID_SECOND_EXTERNAL) {
+        focusWindowHandle = mFocusedWindowHandleOnSecondExternal;
+        focusApplicationHandle = mFocusedApplicationHandleOnSecondExternal;
+    } else {
+        ALOGW("Invalid display ID");
+    }
+#endif
     // If there is no currently focused window and no focused application
     // then drop the event.
+
+#ifndef TRIPLE_DISP
     if (mFocusedWindowHandle == NULL) {
         if (mFocusedApplicationHandle != NULL) {
+#else
+    if (focusWindowHandle == NULL) {
+        if (focusApplicationHandle != NULL) {
+#endif
             injectionResult = handleTargetsNotReadyLocked(currentTime, entry,
+#ifndef TRIPLE_DISP
                     mFocusedApplicationHandle, NULL, nextWakeupTime,
+#else
+                    focusApplicationHandle, NULL, nextWakeupTime,
+#endif
                     "Waiting because no window has focus but there is a "
                     "focused application that may eventually add a window "
                     "when it finishes starting up.");
@@ -1088,24 +1129,41 @@ int32_t InputDispatcher::findFocusedWindowTargetsLocked(nsecs_t currentTime,
         goto Failed;
     }
 
-    // Check permissions.
+    // Check permissions
+#ifndef TRIPLE_DISP
     if (! checkInjectionPermission(mFocusedWindowHandle, entry->injectionState)) {
+#else
+    if (! checkInjectionPermission(focusWindowHandle, entry->injectionState)) {
+#endif
         injectionResult = INPUT_EVENT_INJECTION_PERMISSION_DENIED;
         goto Failed;
     }
 
     // Check whether the window is ready for more input.
     reason = checkWindowReadyForMoreInputLocked(currentTime,
+#ifndef TRIPLE_DISP
             mFocusedWindowHandle, entry, "focused");
+#else
+            focusWindowHandle, entry, "focused");
+#endif
+
     if (!reason.isEmpty()) {
         injectionResult = handleTargetsNotReadyLocked(currentTime, entry,
+#ifndef TRIPLE_DISP
                 mFocusedApplicationHandle, mFocusedWindowHandle, nextWakeupTime, reason.string());
+#else
+                focusApplicationHandle, focusWindowHandle, nextWakeupTime, reason.string());
+#endif
         goto Unresponsive;
     }
 
     // Success!  Output targets.
     injectionResult = INPUT_EVENT_INJECTION_SUCCEEDED;
+#ifndef TRIPLE_DISP
     addWindowTargetLocked(mFocusedWindowHandle,
+#else
+    addWindowTargetLocked(focusWindowHandle,
+#endif
             InputTarget::FLAG_FOREGROUND | InputTarget::FLAG_DISPATCH_AS_IS, BitSet32(0),
             inputTargets);
 
@@ -1169,7 +1227,7 @@ int32_t InputDispatcher::findTouchedWindowTargetsLocked(nsecs_t currentTime,
     bool wrongDevice = false;
     if (newGesture) {
         bool down = maskedAction == AMOTION_EVENT_ACTION_DOWN;
-        if (switchedDevice && mTempTouchState.down && !down && !isHoverAction) {
+        if (switchedDevice && mTempTouchState.down && !down) {
 #if DEBUG_FOCUS
             ALOGD("Dropping event because a pointer for a different device is already down.");
 #endif
@@ -1757,9 +1815,26 @@ String8 InputDispatcher::getApplicationWindowLabelLocked(
 }
 
 void InputDispatcher::pokeUserActivityLocked(const EventEntry* eventEntry) {
+#ifndef TRIPLE_DISP
     if (mFocusedWindowHandle != NULL) {
         const InputWindowInfo* info = mFocusedWindowHandle->getInfo();
         if (info->inputFeatures & InputWindowInfo::INPUT_FEATURE_DISABLE_USER_ACTIVITY) {
+#else
+    sp<InputWindowHandle> mCurrentfocusWindowHandle = mFocusedWindowHandle;
+    if (mFocusDisplayId == ADISPLAY_ID_DEFAULT) {
+         mCurrentfocusWindowHandle = mFocusedWindowHandle;
+    } else if (mFocusDisplayId == ADISPLAY_ID_EXTERNAL) {
+         mCurrentfocusWindowHandle = mFocusedWindowHandleOnExternal;
+    } else if (mFocusDisplayId == ADISPLAY_ID_SECOND_EXTERNAL) {
+        mCurrentfocusWindowHandle = mFocusedWindowHandleOnSecondExternal;
+    } else {
+        ALOGW("Invalid display ID");
+    }
+
+    if (mCurrentfocusWindowHandle != NULL) {
+        const InputWindowInfo* info = mCurrentfocusWindowHandle->getInfo();
+        if (info != NULL && (info->inputFeatures & InputWindowInfo::INPUT_FEATURE_DISABLE_USER_ACTIVITY)) {
+#endif
 #if DEBUG_DISPATCH_CYCLE
             ALOGD("Not poking user activity: disabled by window '%s'.", info->name.string());
 #endif
@@ -1787,7 +1862,7 @@ void InputDispatcher::pokeUserActivityLocked(const EventEntry* eventEntry) {
         }
         eventType = USER_ACTIVITY_EVENT_BUTTON;
         break;
-    }
+     }
     }
 
     CommandEntry* commandEntry = postCommandLocked(
@@ -2510,6 +2585,9 @@ void InputDispatcher::notifyMotion(const NotifyMotionArgs* args) {
                 args->pointerCount, args->pointerProperties)) {
         return;
     }
+#ifdef TRIPLE_DISP
+     bool isFocusChanged = false;
+#endif
 
     uint32_t policyFlags = args->policyFlags;
     policyFlags |= POLICY_FLAG_TRUSTED;
@@ -2547,9 +2625,19 @@ void InputDispatcher::notifyMotion(const NotifyMotionArgs* args) {
                 args->pointerCount, args->pointerProperties, args->pointerCoords, 0, 0);
 
         needWake = enqueueInboundEventLocked(newEntry);
+#ifdef TRIPLE_DISP
+        if(mFocusDisplayId != args->displayId){
+            mFocusDisplayId = args->displayId;
+            isFocusChanged = true;
+        }
+#endif
         mLock.unlock();
     } // release lock
-
+#ifdef TRIPLE_DISP
+    if (isFocusChanged ){
+        mPolicy->updateFocusDisplay(mFocusDisplayId);
+    }
+#endif
     if (needWake) {
         mLooper->wake();
     }
@@ -2640,6 +2728,9 @@ int32_t InputDispatcher::injectInputEvent(const InputEvent* event, int32_t displ
 
     case AINPUT_EVENT_TYPE_MOTION: {
         const MotionEvent* motionEvent = static_cast<const MotionEvent*>(event);
+#ifdef TRIPLE_DISP
+        int32_t displayId = ADISPLAY_ID_DEFAULT;
+#endif
         int32_t action = motionEvent->getAction();
         size_t pointerCount = motionEvent->getPointerCount();
         const PointerProperties* pointerProperties = motionEvent->getPointerProperties();
@@ -2860,6 +2951,10 @@ void InputDispatcher::setInputWindows(const Vector<sp<InputWindowHandle> >& inpu
         mWindowHandles = inputWindowHandles;
 
         sp<InputWindowHandle> newFocusedWindowHandle;
+#ifdef TRIPLE_DISP
+        sp<InputWindowHandle> newFocusedWindowHandleOnExternal;
+        sp<InputWindowHandle> newFocusedWindowHandleOnSecondExternal;
+#endif
         bool foundHoveredWindow = false;
         for (size_t i = 0; i < mWindowHandles.size(); i++) {
             const sp<InputWindowHandle>& windowHandle = mWindowHandles.itemAt(i);
@@ -2867,9 +2962,24 @@ void InputDispatcher::setInputWindows(const Vector<sp<InputWindowHandle> >& inpu
                 mWindowHandles.removeAt(i--);
                 continue;
             }
-            if (windowHandle->getInfo()->hasFocus) {
+#ifndef TRIPLE_DISP
+            if (windowHandle->getInfo()->hasFocus)
+#else
+            if ((windowHandle->getInfo()->hasFocus) && (windowHandle->getInfo()->displayId == ADISPLAY_ID_DEFAULT)) 
+#endif
+            {
                 newFocusedWindowHandle = windowHandle;
             }
+#ifdef TRIPLE_DISP
+            if ((windowHandle->getInfo()->hasFocus) &&
+                (windowHandle->getInfo()->displayId == ADISPLAY_ID_EXTERNAL)) {
+                newFocusedWindowHandleOnExternal = windowHandle;
+            }
+            if ((windowHandle->getInfo()->hasFocus) &&
+                (windowHandle->getInfo()->displayId == ADISPLAY_ID_SECOND_EXTERNAL)) {
+                newFocusedWindowHandleOnSecondExternal = windowHandle;
+            }
+#endif
             if (windowHandle == mLastHoverWindowHandle) {
                 foundHoveredWindow = true;
             }
@@ -2900,6 +3010,51 @@ void InputDispatcher::setInputWindows(const Vector<sp<InputWindowHandle> >& inpu
 #endif
             }
             mFocusedWindowHandle = newFocusedWindowHandle;
+        }
+#ifdef TRIPLE_DISP
+        if (mFocusedWindowHandleOnExternal != newFocusedWindowHandleOnExternal) {
+            if (mFocusedWindowHandleOnExternal != NULL) {
+#if DEBUG_FOCUS
+                ALOGD("External focus left window: %s",
+                        mFocusedWindowHandleOnExternal->getName().string());
+#endif
+                sp<InputChannel> focusedInputChannel = mFocusedWindowHandleOnExternal->getInputChannel();
+                if (focusedInputChannel != NULL) {
+                    CancelationOptions options(CancelationOptions::CANCEL_NON_POINTER_EVENTS,
+                            "focus left window");
+                    synthesizeCancelationEventsForInputChannelLocked(
+                            focusedInputChannel, options);
+                }
+            }
+            if (newFocusedWindowHandleOnExternal != NULL) {
+#if DEBUG_FOCUS
+                ALOGD("External focus entered window: %s",
+                        newFocusedWindowHandleOnExternal->getName().string());
+#endif
+            }
+            mFocusedWindowHandleOnExternal = newFocusedWindowHandleOnExternal;
+        }
+#endif
+        if (mFocusedWindowHandleOnSecondExternal != newFocusedWindowHandleOnSecondExternal) {
+            if (mFocusedWindowHandleOnSecondExternal != NULL) {
+#if DEBUG_FOCUS
+                ALOGD("External focus left window: %s",
+                mFocusedWindowHandleOnSecondExternal->getName().string());
+#endif
+                sp<InputChannel> focusedInputChannel = mFocusedWindowHandleOnSecondExternal->getInputChannel();
+                if (focusedInputChannel != NULL) {
+                    CancelationOptions options(CancelationOptions::CANCEL_NON_POINTER_EVENTS,
+                                               "focus left window");
+                    synthesizeCancelationEventsForInputChannelLocked(focusedInputChannel, options);
+                }
+            }
+            if (newFocusedWindowHandleOnExternal != NULL) {
+#if DEBUG_FOCUS
+                ALOGD("External focus entered window: %s",
+                      newFocusedWindowHandleOnSecondExternal->getName().string());
+#endif
+            }
+             mFocusedWindowHandleOnExternal = newFocusedWindowHandleOnExternal;
         }
 
         for (size_t d = 0; d < mTouchStatesByDisplay.size(); d++) {
@@ -2937,6 +3092,69 @@ void InputDispatcher::setInputWindows(const Vector<sp<InputWindowHandle> >& inpu
                 oldWindowHandle->releaseInfo();
             }
         }
+    } // release lock
+
+    // Wake up poll loop since it may need to make new input dispatching choices.
+    mLooper->wake();
+}
+#ifdef TRIPLE_DISP
+void InputDispatcher::setFocusedApplicationOnExternal(
+        const sp<InputApplicationHandle>& inputApplicationHandle) {
+#if DEBUG_FOCUS
+    ALOGD("setFocusedApplicationOnExternal");
+#endif
+    { // acquire lock
+        AutoMutex _l(mLock);
+
+       if (inputApplicationHandle != NULL && inputApplicationHandle->updateInfo()) {
+            if (mFocusedApplicationHandleOnExternal != inputApplicationHandle) {
+                if (mFocusedApplicationHandleOnExternal != NULL) {
+                    resetANRTimeoutsLocked();
+                    mFocusedApplicationHandleOnExternal->releaseInfo();
+                }
+                mFocusedApplicationHandleOnExternal = inputApplicationHandle;
+            }
+        } else if (mFocusedApplicationHandleOnExternal != NULL) {
+            resetANRTimeoutsLocked();
+            mFocusedApplicationHandleOnExternal->releaseInfo();
+            mFocusedApplicationHandleOnExternal.clear();
+        }
+
+#if DEBUG_FOCUS
+        //logDispatchStateLocked();
+#endif
+    } // release lock
+
+    // Wake up poll loop since it may need to make new input dispatching choices.
+    mLooper->wake();
+}
+#endif
+
+void InputDispatcher::setFocusedApplicationOnSecondExternal(
+        const sp<InputApplicationHandle>& inputApplicationHandle) {
+#if DEBUG_FOCUS
+    ALOGD("setFocusedApplicationOnSecondExternal");
+#endif
+    { // acquire lock
+        AutoMutex _l(mLock);
+
+        if (inputApplicationHandle != NULL && inputApplicationHandle->updateInfo()) {
+            if (mFocusedApplicationHandleOnSecondExternal != inputApplicationHandle) {
+                if (mFocusedApplicationHandleOnSecondExternal != NULL) {
+                    resetANRTimeoutsLocked();
+                    mFocusedApplicationHandleOnSecondExternal->releaseInfo();
+                }
+                mFocusedApplicationHandleOnSecondExternal = inputApplicationHandle;
+            }
+        } else if (mFocusedApplicationHandleOnSecondExternal != NULL) {
+            resetANRTimeoutsLocked();
+            mFocusedApplicationHandleOnSecondExternal->releaseInfo();
+            mFocusedApplicationHandleOnSecondExternal.clear();
+        }
+
+#if DEBUG_FOCUS
+        //logDispatchStateLocked();
+#endif
     } // release lock
 
     // Wake up poll loop since it may need to make new input dispatching choices.
@@ -3160,6 +3378,19 @@ void InputDispatcher::dumpDispatchStateLocked(String8& dump) {
     }
     dump.appendFormat(INDENT "FocusedWindow: name='%s'\n",
             mFocusedWindowHandle != NULL ? mFocusedWindowHandle->getName().string() : "<null>");
+
+#ifdef TRIPLE_DISP
+    if (mFocusedApplicationHandleOnExternal != NULL) {
+        dump.appendFormat(INDENT "FocusedApplicationOnExternal: name='%s', dispatchingTimeout=%0.3fms\n",
+                mFocusedApplicationHandleOnExternal->getName().string(),
+                mFocusedApplicationHandleOnExternal->getDispatchingTimeout(
+                        DEFAULT_INPUT_DISPATCHING_TIMEOUT) / 1000000.0);
+    } else {
+        dump.append(INDENT "FocusedApplicationOnExternal: <null>\n");
+    }
+    dump.appendFormat(INDENT "FocusedWindowOnExternal: name='%s'\n",
+            mFocusedWindowHandleOnExternal != NULL ? mFocusedWindowHandleOnExternal->getName().string() : "<null>");
+#endif
 
     if (!mTouchStatesByDisplay.isEmpty()) {
         dump.appendFormat(INDENT "TouchStatesByDisplay:\n");

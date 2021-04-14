@@ -275,6 +275,7 @@ private:
             hwc_rect_t* GetRects(size_t numRects);
 
             hwc_display_contents_1* getDisplayContents();
+            bool disconectted;
 
             void markGeometryChanged() { mGeometryChanged = true; }
             void resetGeometryMarker() { mGeometryChanged = false;}

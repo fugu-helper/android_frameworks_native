@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// #define LOG_NDEBUG 0
+//#define LOG_NDEBUG 0
 
 #undef LOG_TAG
 #define LOG_TAG "HWComposer"
@@ -61,7 +61,7 @@ namespace android {
 
 HWComposer::HWComposer(bool useVrComposer)
     : mHwcDevice(),
-      mDisplayData(2),
+      mDisplayData(3),
       mFreeDisplaySlots(),
       mHwcDisplaySlots(),
       mCBContext(),
@@ -129,12 +129,19 @@ void HWComposer::onHotplug(hwc2_display_t displayId,
                 " display would be connected");
         mDisplayData[0].hwcDisplay = mHwcDevice->getDisplayById(displayId);
         mHwcDisplaySlots[displayId] = 0;
-    } else {
+    } else if (!mDisplayData[1].hwcDisplay) {
         // Disconnect is handled through HWComposer::disconnectDisplay via
         // SurfaceFlinger's onHotplugReceived callback handling
+        ALOGV("HWComposer::onHotplug, mDisplayData[1].hwcDsiplay");
         if (connection == HWC2::Connection::Connected) {
             mDisplayData[1].hwcDisplay = mHwcDevice->getDisplayById(displayId);
             mHwcDisplaySlots[displayId] = 1;
+        }
+    } else if (!mDisplayData[2].hwcDisplay) {
+        ALOGV("HWComposer::onHotplug, mDisplayData[2].hwcDsiplay");
+        if (connection == HWC2::Connection::Connected) {
+            mDisplayData[2].hwcDisplay = mHwcDevice->getDisplayById(displayId);
+            mHwcDisplaySlots[displayId] = 2;
         }
     }
 }
